@@ -14,6 +14,8 @@ target/
 # Node/React
 frontend/node_modules/
 frontend/build/
+# Maven-downloaded Node/npm binaries (frontend-maven-plugin)
+backend/target/node/
 frontend/.env.local
 frontend/.env.development.local
 frontend/.env.test.local

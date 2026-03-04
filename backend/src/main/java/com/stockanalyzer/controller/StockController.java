@@ -11,7 +11,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 @RestController
-@RequestMapping("/stock")
+@RequestMapping("/api/stock")
 public class StockController {
 
     private final StockAnalysisService analysisService;

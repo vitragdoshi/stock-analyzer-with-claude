@@ -17,36 +17,48 @@ A comprehensive full-stack application for analyzing Indian stocks listed on NSE
 | Layer | Technology |
 |-------|-----------|
 | Backend | Java 17 + Spring Boot 3.2 |
-| Frontend | React 18 + Recharts |
-| Charts | Recharts (line, bar, area, radar, pie) |
+| Frontend | React 18 + Recharts (bundled into the JAR) |
+| Build | frontend-maven-plugin (Node/npm managed by Maven) |
 
-## Running Locally
+## Bundled Mode — Single Process
+
+The React app is compiled by Maven and embedded in the Spring Boot JAR.
+**No separate Node.js runtime is needed at runtime.**
 
 ### Prerequisites
 - Java 17+
-- Maven 3.8+
-- Node.js 18+
+- Maven 3.8+ (Maven downloads Node 18 automatically via the plugin)
 
-### Backend
+### Run locally
 ```bash
 cd backend
 mvn spring-boot:run
-# API available at http://localhost:8080/api
+# UI + API both at http://localhost:8080
 ```
 
-### Frontend
+### Build fat JAR
 ```bash
-cd frontend
-npm install
-npm start
-# App available at http://localhost:3000
+cd backend
+mvn clean package -DskipTests
+java -jar target/indian-stock-analyzer-1.0.0.jar
+# UI + API both at http://localhost:8080
 ```
 
-### Docker (Full Stack)
+### Docker
 ```bash
 docker-compose up --build
-# App: http://localhost:3000
-# API: http://localhost:8080/api
+# UI + API at http://localhost:8080
+```
+
+### Frontend hot-reload dev mode (optional)
+If you want React hot-reload while iterating on the UI, run both:
+```bash
+# Terminal 1 — Spring Boot (skip frontend build for speed)
+cd backend && mvn spring-boot:run -Dmaven.frontend.skip=true
+
+# Terminal 2 — React dev server (proxies /api to :8080 via package.json proxy)
+cd frontend && npm start
+# UI at http://localhost:3000, API proxied to http://localhost:8080
 ```
 
 ## API Endpoints
