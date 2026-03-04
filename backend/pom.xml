@@ -62,6 +62,8 @@
                 <configuration>
                     <workingDirectory>${project.basedir}/../frontend</workingDirectory>
                     <installDirectory>${project.build.directory}/node</installDirectory>
+                    <!-- Pass -DskipFrontend=true to skip Node download + npm build -->
+                    <skip>${skipFrontend}</skip>
                 </configuration>
                 <executions>
                     <execution>
