@@ -1,0 +1,18 @@
+version: '3.8'
+
+# Single-service bundled deployment.
+# The Maven build compiles React into the Spring Boot JAR (src/main/resources/static).
+# Both UI (http://localhost:8080/) and API (/api/**) are served from one process.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/stock/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
