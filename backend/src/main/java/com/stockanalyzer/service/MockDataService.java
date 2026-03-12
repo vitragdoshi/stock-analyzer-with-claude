@@ -89,4 +89,19 @@ public class MockDataService {
     public Random getSeededRandom(String symbol) {
         return new Random(symbol.hashCode());
     }
+
+    /** Convenience accessor for the company's display name. */
+    public String getCompanyName(String symbol) {
+        return getStockMeta(symbol)[0];
+    }
+
+    /** Convenience accessor for the sector string. */
+    public String getSector(String symbol) {
+        return getStockMeta(symbol)[2];
+    }
+
+    /** Convenience accessor for the base (current) price. */
+    public double getPrice(String symbol) {
+        return getStockPrices(symbol)[0];
+    }
 }
