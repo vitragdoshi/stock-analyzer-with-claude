@@ -8,6 +8,7 @@ import NewsSection from './components/NewsSection';
 import FinancialStatements from './components/FinancialStatements';
 import ShareholdingPattern from './components/ShareholdingPattern';
 import ManipulationAnalysis from './components/ManipulationAnalysis';
+import InferenceScorecard from './components/InferenceScorecard';
 import { analyzeStock } from './services/api';
 
 const TABS = [
@@ -19,6 +20,7 @@ const TABS = [
   { id: 'news', label: 'News & Intel' },
   { id: 'shareholding', label: 'Shareholding' },
   { id: 'manipulation', label: 'Manipulation Check' },
+  { id: 'inference', label: '🤖 AI Inference' },
 ];
 
 function RecommendationBanner({ sentiment, recommendation, justification }) {
@@ -245,6 +247,10 @@ export default function App() {
 
             {activeTab === 'manipulation' && (
               <ManipulationAnalysis data={analysisData.manipulationAnalysis} />
+            )}
+
+            {activeTab === 'inference' && (
+              <InferenceScorecard symbol={analysisData.symbol} />
             )}
           </>
         )}
