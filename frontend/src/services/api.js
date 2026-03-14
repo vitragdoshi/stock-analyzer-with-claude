@@ -19,4 +19,8 @@ export const getAvailableSymbols = () =>
 export const checkHealth = () =>
   api.get('/stock/health').then(r => r.data);
 
+// Inference engine: returns ScoreCard with multi-factor weighted recommendation
+export const getInferenceScore = (symbol) =>
+  api.get(`/stock/inference/${symbol}`, { timeout: 45000 }).then(r => r.data);
+
 export default api;

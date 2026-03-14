@@ -42,11 +42,10 @@ public class NewsAggregatorClient {
     private static final String GOOGLE_NEWS_TEMPLATE =
             "https://news.google.com/rss/search?q=%s+NSE+stock+India&hl=en-IN&gl=IN&ceid=IN:en";
 
+    // Only feeds confirmed reachable (HTTP 200) in connectivity tests.
+    // ET Markets and Business Standard return 403/000 and are excluded.
     private static final List<String> GENERAL_FEEDS = List.of(
-            "https://economictimes.indiatimes.com/markets/stocks/rss.cms",
-            "https://economictimes.indiatimes.com/markets/rss.cms",
-            "https://www.moneycontrol.com/rss/latestnews.xml",
-            "https://www.business-standard.com/rss/markets-106.rss"
+            "https://www.moneycontrol.com/rss/latestnews.xml"
     );
 
     private static final Map<String, Double> SOURCE_CREDIBILITY = Map.of(

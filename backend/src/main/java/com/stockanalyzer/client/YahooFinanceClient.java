@@ -10,6 +10,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -23,8 +26,10 @@ import java.util.concurrent.TimeUnit;
  * All Indian NSE symbols are suffixed with ".NS" (e.g. RELIANCE → RELIANCE.NS).
  *
  * Endpoints used:
- *   Chart API  – https://query1.finance.yahoo.com/v8/finance/chart/{symbol}
- *   Summary    – https://query1.finance.yahoo.com/v10/finance/quoteSummary/{symbol}?modules=...
+ *   Chart API   – https://query1.finance.yahoo.com/v8/finance/chart/{symbol}
+ *                 (no auth required; returns 200)
+ *   Summary API – https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}?modules=...&crumb=...
+ *                 (requires crumb token + session cookie from YahooFinanceCrumbProvider)
  *
  * No API key is required. Rate limit ≈ 2 000 req/h per IP.
  * Results are cached in TtlCache instances to avoid redundant calls.
@@ -34,8 +39,14 @@ public class YahooFinanceClient {
 
     private static final Logger log = LoggerFactory.getLogger(YahooFinanceClient.class);
 
+    // Chart API does NOT require crumb – use query1
     private static final String BASE_CHART   = "https://query1.finance.yahoo.com/v8/finance/chart/";
-    private static final String BASE_SUMMARY = "https://query1.finance.yahoo.com/v10/finance/quoteSummary/";
+    // Summary API DOES require crumb – must use query2
+    private static final String BASE_SUMMARY = "https://query2.finance.yahoo.com/v10/finance/quoteSummary/";
+
+    private static final String UA =
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
     private static final String MODULES_FULL =
             "summaryDetail,financialData,defaultKeyStatistics," +
@@ -43,19 +54,22 @@ public class YahooFinanceClient {
             "upgradeDowngradeHistory,majorHoldersBreakdown,price";
 
     // Per-data-type TTL caches (no external library required)
-    private final TtlCache<QuoteData>           quoteCache   = new TtlCache<>(TimeUnit.MINUTES.toMillis(5));
-    private final TtlCache<List<HistoricalPrice>> histCache   = new TtlCache<>(TimeUnit.HOURS.toMillis(1));
-    private final TtlCache<JsonNode>             summaryCache = new TtlCache<>(TimeUnit.HOURS.toMillis(6));
-    private final TtlCache<AnalystConsensus>     analystCache = new TtlCache<>(TimeUnit.HOURS.toMillis(12));
-    private final TtlCache<EarningsData>         earningsCache = new TtlCache<>(TimeUnit.HOURS.toMillis(6));
+    private final TtlCache<QuoteData>             quoteCache   = new TtlCache<>(TimeUnit.MINUTES.toMillis(5));
+    private final TtlCache<List<HistoricalPrice>> histCache    = new TtlCache<>(TimeUnit.HOURS.toMillis(1));
+    private final TtlCache<JsonNode>              summaryCache = new TtlCache<>(TimeUnit.HOURS.toMillis(6));
+    private final TtlCache<AnalystConsensus>      analystCache = new TtlCache<>(TimeUnit.HOURS.toMillis(12));
+    private final TtlCache<EarningsData>          earningsCache = new TtlCache<>(TimeUnit.HOURS.toMillis(6));
 
-    private final RestTemplate http;
-    private final ObjectMapper mapper;
+    private final RestTemplate             http;
+    private final ObjectMapper             mapper;
+    private final YahooFinanceCrumbProvider crumbProvider;
 
     @Autowired
-    public YahooFinanceClient(RestTemplate externalRestTemplate) {
-        this.http   = externalRestTemplate;
-        this.mapper = new ObjectMapper();
+    public YahooFinanceClient(RestTemplate externalRestTemplate,
+                              YahooFinanceCrumbProvider crumbProvider) {
+        this.http          = externalRestTemplate;
+        this.mapper        = new ObjectMapper();
+        this.crumbProvider = crumbProvider;
     }
 
     // ── Symbol helpers ────────────────────────────────────────────────────
@@ -347,18 +361,63 @@ public class YahooFinanceClient {
     // ── Private helpers ───────────────────────────────────────────────────
 
     /** Fetch all summary modules in one HTTP call; result cached for 6 hours. */
+    /**
+     * Fetch all quoteSummary modules in one call using crumb authentication.
+     *
+     * Yahoo Finance requires:
+     *   • Session cookies obtained from fc.yahoo.com (managed by YahooFinanceCrumbProvider)
+     *   • A crumb token appended as ?crumb=… to the URL
+     *   • The request must use query2.finance.yahoo.com (not query1)
+     *
+     * We use java.net.http.HttpClient (from the crumb provider) so that the same
+     * cookie jar is reused automatically across requests.
+     */
     private JsonNode fetchSummaryModules(String symbol) {
         String key = symbol.toUpperCase() + "_summary";
         JsonNode hit = summaryCache.get(key);
         if (hit != null) return hit;
 
         String ySymbol = toYahooSymbol(symbol);
-        String url = BASE_SUMMARY + ySymbol + "?modules=" + MODULES_FULL;
+        String baseUrl = BASE_SUMMARY + ySymbol + "?modules=" + MODULES_FULL;
+        String url     = crumbProvider.buildSummaryUrl(baseUrl); // appends &crumb=...
+
         try {
-            String raw = http.getForObject(url, String.class);
-            JsonNode root = mapper.readTree(raw);
+            HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                    .GET()
+                    .header("User-Agent", UA)
+                    .header("Accept", "application/json, */*")
+                    .header("Referer", "https://finance.yahoo.com/quote/" + ySymbol + "/")
+                    .header("Accept-Language", "en-US,en;q=0.9")
+                    .build();
+
+            HttpResponse<String> resp = crumbProvider.getHttpClient()
+                    .send(req, HttpResponse.BodyHandlers.ofString());
+
+            if (resp.statusCode() == 401) {
+                // Crumb expired – invalidate and retry once
+                log.warn("YF quoteSummary 401 for {} – crumb may be stale, retrying", ySymbol);
+                url  = crumbProvider.buildSummaryUrl(baseUrl); // forces crumb refresh
+                req  = HttpRequest.newBuilder(URI.create(url))
+                        .GET()
+                        .header("User-Agent", UA)
+                        .header("Accept", "application/json, */*")
+                        .header("Referer", "https://finance.yahoo.com/quote/" + ySymbol + "/")
+                        .build();
+                resp = crumbProvider.getHttpClient()
+                        .send(req, HttpResponse.BodyHandlers.ofString());
+            }
+
+            if (resp.statusCode() != 200) {
+                log.warn("YF quoteSummary HTTP {} for {}", resp.statusCode(), ySymbol);
+                return null;
+            }
+
+            JsonNode root   = mapper.readTree(resp.body());
             JsonNode result = root.path("quoteSummary").path("result").get(0);
-            summaryCache.put(key, result);
+            if (result != null && !result.isMissingNode()) {
+                summaryCache.put(key, result);
+                log.info("YF quoteSummary OK for {}", ySymbol);
+            }
             return result;
         } catch (Exception e) {
             log.warn("YF summary failed for {}: {}", ySymbol, e.getMessage());
