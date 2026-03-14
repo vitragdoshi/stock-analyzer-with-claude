@@ -78,7 +78,7 @@
                         <goals><goal>install-node-and-npm</goal></goals>
                         <phase>generate-resources</phase>
                         <configuration>
-                            <nodeVersion>v18.18.0</nodeVersion>
+                            <nodeVersion>v24.0.0</nodeVersion>
                         </configuration>
                     </execution>
                     <execution>
