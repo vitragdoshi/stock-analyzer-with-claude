@@ -1,11 +1,16 @@
 package com.stockanalyzer.service;
 
 import com.stockanalyzer.dto.StockAnalysisResponse.*;
+import lombok.AccessLevel;
+import lombok.experimental.FieldDefaults;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
 
+@Slf4j
 @Service
+@FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
 public class ShareholdingService {
 
     public ShareholdingPattern analyze(String symbol, Random rng) {

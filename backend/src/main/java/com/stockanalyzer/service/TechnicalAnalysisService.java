@@ -1,11 +1,16 @@
 package com.stockanalyzer.service;
 
 import com.stockanalyzer.dto.StockAnalysisResponse.TechnicalAnalysis;
+import lombok.AccessLevel;
+import lombok.experimental.FieldDefaults;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.Random;
 
+@Slf4j
 @Service
+@FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
 public class TechnicalAnalysisService {
 
     public TechnicalAnalysis analyze(String symbol, double currentPrice, double[] prices, Random rng) {

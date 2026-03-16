@@ -4,9 +4,11 @@ import com.stockanalyzer.client.NewsAggregatorClient;
 import com.stockanalyzer.dto.StockAnalysisResponse.NewsItem;
 import com.stockanalyzer.inference.SentimentAnalyzer;
 import com.stockanalyzer.model.NewsArticle;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.AccessLevel;
+import lombok.NonNull;
+import lombok.RequiredArgsConstructor;
+import lombok.experimental.FieldDefaults;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
@@ -21,29 +23,24 @@ import java.util.*;
  *   1. Real news from RSS feeds via NewsAggregatorClient (company + sector news)
  *   2. Curated mock news as fallback
  */
+@Slf4j
 @Service
+@RequiredArgsConstructor
+@FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
 public class NewsService {
 
-    private static final Logger log = LoggerFactory.getLogger(NewsService.class);
-    private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("dd MMM yyyy");
+    static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("dd MMM yyyy");
 
-    private static final String[] CREDIBLE_SOURCES = {
+    static final String[] CREDIBLE_SOURCES = {
         "Economic Times", "Business Standard", "Mint", "Financial Express",
         "Moneycontrol", "NDTV Profit", "Bloomberg India", "Reuters India"
     };
-    private static final String[] LESS_CREDIBLE_SOURCES = {
+    static final String[] LESS_CREDIBLE_SOURCES = {
         "Unknown Blog", "WhatsApp Forward", "Telegram Channel", "Twitter User @StockGuru"
     };
 
-    private final NewsAggregatorClient newsClient;
-    private final SentimentAnalyzer    sentimentAnalyzer;
-
-    @Autowired
-    public NewsService(NewsAggregatorClient newsClient,
-                       SentimentAnalyzer sentimentAnalyzer) {
-        this.newsClient        = newsClient;
-        this.sentimentAnalyzer = sentimentAnalyzer;
-    }
+    @NonNull NewsAggregatorClient newsClient;
+    @NonNull SentimentAnalyzer    sentimentAnalyzer;
 
     // ── Public API ────────────────────────────────────────────────────────
 
@@ -89,30 +86,27 @@ public class NewsService {
     // ── Conversion: NewsArticle → NewsItem ────────────────────────────────
 
     private List<NewsItem> toNewsItems(List<NewsArticle> articles) {
-        List<NewsItem> items = new ArrayList<>();
-        for (NewsArticle a : articles) {
-            NewsItem item = new NewsItem();
-            item.setHeadline(a.getTitle());
-            item.setSource(a.getSource());
-            item.setPublishedDate(a.getPublishedAt() != null
-                    ? LocalDate.ofInstant(a.getPublishedAt(), ZoneOffset.UTC).format(DATE_FMT)
-                    : LocalDate.now().format(DATE_FMT));
-            item.setSummary(a.getSummary() != null && !a.getSummary().isEmpty()
-                    ? a.getSummary() : a.getTitle());
-            item.setSentiment(a.getSentimentLabel() != null ? a.getSentimentLabel() : "NEUTRAL");
+        return articles.stream().map(a -> {
             boolean highCred = a.getSourceCredibility() >= 0.80;
-            item.setAuthenticityScore(highCred ? "HIGH" : a.getSourceCredibility() >= 0.65 ? "MEDIUM" : "LOW");
-            item.setAuthenticityJustification(String.format(
-                    "Published by %s (credibility score: %.0f%%). %s",
-                    a.getSource(),
-                    a.getSourceCredibility() * 100,
-                    highCred ? "Established financial media outlet." : "Verify from primary sources."));
-            item.setImpactOnStock(sentimentToImpact(a.getSentimentLabel()));
-            item.setAuthentic(highCred);
-            item.setUrl(a.getUrl() != null ? a.getUrl() : "#");
-            items.add(item);
-        }
-        return items;
+            return NewsItem.builder()
+                    .headline(a.getTitle())
+                    .source(a.getSource())
+                    .publishedDate(a.getPublishedAt() != null
+                            ? LocalDate.ofInstant(a.getPublishedAt(), ZoneOffset.UTC).format(DATE_FMT)
+                            : LocalDate.now().format(DATE_FMT))
+                    .summary(a.getSummary() != null && !a.getSummary().isEmpty()
+                            ? a.getSummary() : a.getTitle())
+                    .sentiment(a.getSentimentLabel() != null ? a.getSentimentLabel() : "NEUTRAL")
+                    .authenticityScore(highCred ? "HIGH" : a.getSourceCredibility() >= 0.65 ? "MEDIUM" : "LOW")
+                    .authenticityJustification(String.format(
+                            "Published by %s (credibility score: %.0f%%). %s",
+                            a.getSource(), a.getSourceCredibility() * 100,
+                            highCred ? "Established financial media outlet." : "Verify from primary sources."))
+                    .impactOnStock(sentimentToImpact(a.getSentimentLabel()))
+                    .authentic(highCred)
+                    .url(a.getUrl() != null ? a.getUrl() : "#")
+                    .build();
+        }).toList();
     }
 
     private String sentimentToImpact(String label) {
@@ -209,18 +203,12 @@ public class NewsService {
     private NewsItem createNewsItem(String headline, String source, String date,
                                     String summary, String sentiment, String authScore,
                                     String authJust, String impact, boolean isAuthentic) {
-        NewsItem item = new NewsItem();
-        item.setHeadline(headline);
-        item.setSource(source);
-        item.setPublishedDate(date);
-        item.setSummary(summary);
-        item.setSentiment(sentiment);
-        item.setAuthenticityScore(authScore);
-        item.setAuthenticityJustification(authJust);
-        item.setImpactOnStock(impact);
-        item.setAuthentic(isAuthentic);
-        item.setUrl("#");
-        return item;
+        return NewsItem.builder()
+                .headline(headline).source(source).publishedDate(date)
+                .summary(summary).sentiment(sentiment)
+                .authenticityScore(authScore).authenticityJustification(authJust)
+                .impactOnStock(impact).authentic(isAuthentic).url("#")
+                .build();
     }
 
     private String daysAgo(int days) {

@@ -4,9 +4,11 @@ import com.stockanalyzer.client.YahooFinanceClient;
 import com.stockanalyzer.dto.ChartDataResponse;
 import com.stockanalyzer.dto.ChartDataResponse.*;
 import com.stockanalyzer.model.HistoricalPrice;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.AccessLevel;
+import lombok.NonNull;
+import lombok.RequiredArgsConstructor;
+import lombok.experimental.FieldDefaults;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
@@ -21,27 +23,18 @@ import java.util.*;
  *   2. Mock random-walk generator (fallback when API is unavailable)
  */
 @Service
+@RequiredArgsConstructor
+@Slf4j
+@FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
 public class ChartDataService {
 
-    private static final Logger log = LoggerFactory.getLogger(ChartDataService.class);
     private static final DateTimeFormatter FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
-    private final MockDataService     mockDataService;
-    private final YahooFinanceClient  yahooClient;
-
-    @Autowired
-    public ChartDataService(MockDataService mockDataService,
-                            YahooFinanceClient yahooClient) {
-        this.mockDataService = mockDataService;
-        this.yahooClient     = yahooClient;
-    }
+    @NonNull MockDataService     mockDataService;
+    @NonNull YahooFinanceClient  yahooClient;
 
     public ChartDataResponse getChartData(String symbol, String timeframe) {
         String sym = symbol.toUpperCase().trim();
-
-        ChartDataResponse response = new ChartDataResponse();
-        response.setSymbol(sym);
-        response.setTimeframe(timeframe);
 
         // Map UI timeframe → Yahoo Finance range
         String yfRange = toYfRange(timeframe);
@@ -53,50 +46,58 @@ public class ChartDataService {
             log.warn("Chart data fetch failed for {}: {}", sym, e.getMessage());
         }
 
+        List<CandleData> candles;
+        List<VolumeData> volumes;
+
         if (real != null && !real.isEmpty()) {
-            buildFromReal(response, real);
+            candles = new ArrayList<>();
+            volumes = new ArrayList<>();
+            buildFromReal(candles, volumes, real);
         } else {
             log.info("Using mock chart data for {}", sym);
-            buildFromMock(response, sym, timeframe);
+            candles = new ArrayList<>();
+            volumes = new ArrayList<>();
+            buildFromMock(candles, volumes, sym, timeframe);
         }
 
-        return response;
+        return ChartDataResponse.builder()
+                .symbol(sym)
+                .timeframe(timeframe)
+                .candles(candles)
+                .volumes(volumes)
+                .build();
     }
 
     // ── Real data path ────────────────────────────────────────────────────
 
-    private void buildFromReal(ChartDataResponse response, List<HistoricalPrice> bars) {
-        List<CandleData> candles = new ArrayList<>();
-        List<VolumeData> volumes = new ArrayList<>();
-
+    private void buildFromReal(List<CandleData> candles, List<VolumeData> volumes,
+                               List<HistoricalPrice> bars) {
         long totalVol = 0;
         for (HistoricalPrice hp : bars) totalVol += hp.getVolume();
         long avgVol = bars.isEmpty() ? 5_000_000L : totalVol / bars.size();
 
         for (HistoricalPrice hp : bars) {
-            CandleData c = new CandleData();
-            c.setDate(hp.getDate().format(FMT));
-            c.setOpen(round2(hp.getOpen()));
-            c.setHigh(round2(hp.getHigh()));
-            c.setLow(round2(hp.getLow()));
-            c.setClose(round2(hp.getClose()));
-            c.setVolume(hp.getVolume());
-            candles.add(c);
+            candles.add(CandleData.builder()
+                    .date(hp.getDate().format(FMT))
+                    .open(round2(hp.getOpen()))
+                    .high(round2(hp.getHigh()))
+                    .low(round2(hp.getLow()))
+                    .close(round2(hp.getClose()))
+                    .volume(hp.getVolume())
+                    .build());
 
-            VolumeData v = new VolumeData();
-            v.setDate(hp.getDate().format(FMT));
-            v.setVolume(hp.getVolume());
-            v.setAboveAverage(hp.getVolume() > avgVol);
-            volumes.add(v);
+            volumes.add(VolumeData.builder()
+                    .date(hp.getDate().format(FMT))
+                    .volume(hp.getVolume())
+                    .aboveAverage(hp.getVolume() > avgVol)
+                    .build());
         }
-
-        response.setCandles(candles);
-        response.setVolumes(volumes);
     }
 
     // ── Mock fallback ─────────────────────────────────────────────────────
 
-    private void buildFromMock(ChartDataResponse response, String symbol, String timeframe) {
+    private void buildFromMock(List<CandleData> candles, List<VolumeData> volumes,
+                               String symbol, String timeframe) {
         double[] prices  = mockDataService.getStockPrices(symbol);
         double basePrice = prices[0];
         int days = switch (timeframe.toUpperCase()) {
@@ -116,9 +117,6 @@ public class ChartDataService {
         LocalDate start  = LocalDate.now().minusDays(days);
         double trend     = Math.pow(basePrice / price, 1.0 / days);
 
-        List<CandleData> candles = new ArrayList<>();
-        List<VolumeData> volumes = new ArrayList<>();
-
         for (int i = 0; i < days; i++) {
             LocalDate date = start.plusDays(i);
             if (date.getDayOfWeek().getValue() >= 6) continue;
@@ -129,26 +127,23 @@ public class ChartDataService {
             double intraVol = price * 0.01 * (0.5 + rng.nextDouble());
             double high  = Math.max(open, price) + intraVol * rng.nextDouble();
             double low   = Math.min(open, price) - intraVol * rng.nextDouble();
-
-            CandleData c = new CandleData();
-            c.setDate(date.format(FMT));
-            c.setOpen(round2(open));
-            c.setHigh(round2(high));
-            c.setLow(round2(Math.max(0.01, low)));
-            c.setClose(round2(price));
             long vol = (long)(avgVol * (0.5 + rng.nextDouble() * 1.5));
-            c.setVolume(vol);
-            candles.add(c);
 
-            VolumeData v = new VolumeData();
-            v.setDate(date.format(FMT));
-            v.setVolume(vol);
-            v.setAboveAverage(vol > avgVol);
-            volumes.add(v);
+            candles.add(CandleData.builder()
+                    .date(date.format(FMT))
+                    .open(round2(open))
+                    .high(round2(high))
+                    .low(round2(Math.max(0.01, low)))
+                    .close(round2(price))
+                    .volume(vol)
+                    .build());
+
+            volumes.add(VolumeData.builder()
+                    .date(date.format(FMT))
+                    .volume(vol)
+                    .aboveAverage(vol > avgVol)
+                    .build());
         }
-
-        response.setCandles(candles);
-        response.setVolumes(volumes);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────

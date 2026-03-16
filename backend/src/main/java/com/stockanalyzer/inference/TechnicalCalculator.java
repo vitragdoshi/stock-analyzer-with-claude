@@ -1,6 +1,8 @@
 package com.stockanalyzer.inference;
 
 import com.stockanalyzer.model.HistoricalPrice;
+import lombok.AccessLevel;
+import lombok.experimental.FieldDefaults;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -12,6 +14,7 @@ import java.util.List;
  * Indicators that require more bars than are available return NaN.
  */
 @Component
+@FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
 public class TechnicalCalculator {
 
     // ── RSI ───────────────────────────────────────────────────────────────
