@@ -6,6 +6,10 @@ import com.stockanalyzer.inference.InferenceEngine;
 import com.stockanalyzer.inference.ScoreCard;
 import com.stockanalyzer.service.ChartDataService;
 import com.stockanalyzer.service.StockAnalysisService;
+import lombok.AccessLevel;
+import lombok.NonNull;
+import lombok.RequiredArgsConstructor;
+import lombok.experimental.FieldDefaults;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -14,19 +18,13 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/stock")
+@RequiredArgsConstructor
+@FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
 public class StockController {
 
-    private final StockAnalysisService analysisService;
-    private final ChartDataService     chartDataService;
-    private final InferenceEngine      inferenceEngine;
-
-    public StockController(StockAnalysisService analysisService,
-                           ChartDataService chartDataService,
-                           InferenceEngine inferenceEngine) {
-        this.analysisService  = analysisService;
-        this.chartDataService = chartDataService;
-        this.inferenceEngine  = inferenceEngine;
-    }
+    @NonNull StockAnalysisService analysisService;
+    @NonNull ChartDataService     chartDataService;
+    @NonNull InferenceEngine      inferenceEngine;
 
     // ── Existing endpoints ────────────────────────────────────────────────
 

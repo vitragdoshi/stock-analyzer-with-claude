@@ -2,8 +2,9 @@ package com.stockanalyzer.client;
 
 import com.stockanalyzer.model.NewsArticle;
 import com.stockanalyzer.util.TtlCache;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.AccessLevel;
+import lombok.experimental.FieldDefaults;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -34,12 +35,12 @@ import java.util.stream.Collectors;
  * Uses Java's built-in DOM XML parser — no external RSS library required.
  * Results are cached in a TtlCache (15 min TTL).
  */
+@Slf4j
 @Component
+@FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
 public class NewsAggregatorClient {
 
-    private static final Logger log = LoggerFactory.getLogger(NewsAggregatorClient.class);
-
-    private static final String GOOGLE_NEWS_TEMPLATE =
+    static final String GOOGLE_NEWS_TEMPLATE =
             "https://news.google.com/rss/search?q=%s+NSE+stock+India&hl=en-IN&gl=IN&ceid=IN:en";
 
     // Only feeds confirmed reachable (HTTP 200) in connectivity tests.
@@ -63,8 +64,7 @@ public class NewsAggregatorClient {
     private static final double DEFAULT_CREDIBILITY = 0.60;
 
     // 15-minute TTL cache
-    private final TtlCache<List<NewsArticle>> newsCache =
-            new TtlCache<>(TimeUnit.MINUTES.toMillis(15));
+    TtlCache<List<NewsArticle>> newsCache = new TtlCache<>(TimeUnit.MINUTES.toMillis(15));
 
     // RFC-822 date formatter common in RSS feeds
     private static final DateTimeFormatter RFC822 =
@@ -134,17 +134,16 @@ public class NewsAggregatorClient {
                     if (title.isEmpty()) continue;
                     if (!isSpecific && !isRelevant(title + " " + desc, symbol, company)) continue;
 
-                    NewsArticle a = new NewsArticle();
-                    a.setTitle(title);
-                    a.setSummary(desc.length() > 500 ? desc.substring(0, 500) + "\u2026" : desc);
-                    a.setUrl(link.isEmpty() ? "" : link);
-                    a.setSource(sourceName);
-                    a.setPublishedAt(parseDate(pubDate));
-                    a.setSourceCredibility(
-                            SOURCE_CREDIBILITY.getOrDefault(sourceName, DEFAULT_CREDIBILITY));
-                    a.setCompanySpecific(isSpecific || isRelevant(title, symbol, company));
-                    a.setRelevanceScore(computeRelevance(title + " " + desc, symbol, company));
-                    articles.add(a);
+                    articles.add(NewsArticle.builder()
+                            .title(title)
+                            .summary(desc.length() > 500 ? desc.substring(0, 500) + "\u2026" : desc)
+                            .url(link.isEmpty() ? "" : link)
+                            .source(sourceName)
+                            .publishedAt(parseDate(pubDate))
+                            .sourceCredibility(SOURCE_CREDIBILITY.getOrDefault(sourceName, DEFAULT_CREDIBILITY))
+                            .companySpecific(isSpecific || isRelevant(title, symbol, company))
+                            .relevanceScore(computeRelevance(title + " " + desc, symbol, company))
+                            .build());
                 }
             }
         } catch (Exception e) {

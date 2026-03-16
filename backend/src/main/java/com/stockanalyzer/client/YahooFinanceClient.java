@@ -1,12 +1,14 @@
 package com.stockanalyzer.client;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.stockanalyzer.client.yahoo.*;
 import com.stockanalyzer.model.*;
 import com.stockanalyzer.util.TtlCache;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.AccessLevel;
+import lombok.NonNull;
+import lombok.RequiredArgsConstructor;
+import lombok.experimental.FieldDefaults;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 
@@ -34,43 +36,37 @@ import java.util.concurrent.TimeUnit;
  * No API key is required. Rate limit ≈ 2 000 req/h per IP.
  * Results are cached in TtlCache instances to avoid redundant calls.
  */
+@Slf4j
 @Component
+@RequiredArgsConstructor
+@FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
 public class YahooFinanceClient {
 
-    private static final Logger log = LoggerFactory.getLogger(YahooFinanceClient.class);
-
     // Chart API does NOT require crumb – use query1
-    private static final String BASE_CHART   = "https://query1.finance.yahoo.com/v8/finance/chart/";
+    static final String BASE_CHART   = "https://query1.finance.yahoo.com/v8/finance/chart/";
     // Summary API DOES require crumb – must use query2
-    private static final String BASE_SUMMARY = "https://query2.finance.yahoo.com/v10/finance/quoteSummary/";
+    static final String BASE_SUMMARY = "https://query2.finance.yahoo.com/v10/finance/quoteSummary/";
 
-    private static final String UA =
+    static final String UA =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-    private static final String MODULES_FULL =
+    static final String MODULES_FULL =
             "summaryDetail,financialData,defaultKeyStatistics," +
             "recommendationTrend,earningsTrend,earningsHistory," +
             "upgradeDowngradeHistory,majorHoldersBreakdown,price";
 
-    // Per-data-type TTL caches (no external library required)
-    private final TtlCache<QuoteData>             quoteCache   = new TtlCache<>(TimeUnit.MINUTES.toMillis(5));
-    private final TtlCache<List<HistoricalPrice>> histCache    = new TtlCache<>(TimeUnit.HOURS.toMillis(1));
-    private final TtlCache<JsonNode>              summaryCache = new TtlCache<>(TimeUnit.HOURS.toMillis(6));
-    private final TtlCache<AnalystConsensus>      analystCache = new TtlCache<>(TimeUnit.HOURS.toMillis(12));
-    private final TtlCache<EarningsData>          earningsCache = new TtlCache<>(TimeUnit.HOURS.toMillis(6));
+    // Per-data-type TTL caches
+    TtlCache<QuoteData>                   quoteCache    = new TtlCache<>(TimeUnit.MINUTES.toMillis(5));
+    TtlCache<List<HistoricalPrice>>       histCache     = new TtlCache<>(TimeUnit.HOURS.toMillis(1));
+    TtlCache<YfQuoteSummaryResponse.QuoteSummaryResult> summaryCache =
+            new TtlCache<>(TimeUnit.HOURS.toMillis(6));
+    TtlCache<AnalystConsensus>            analystCache  = new TtlCache<>(TimeUnit.HOURS.toMillis(12));
+    TtlCache<EarningsData>                earningsCache = new TtlCache<>(TimeUnit.HOURS.toMillis(6));
 
-    private final RestTemplate             http;
-    private final ObjectMapper             mapper;
-    private final YahooFinanceCrumbProvider crumbProvider;
-
-    @Autowired
-    public YahooFinanceClient(RestTemplate externalRestTemplate,
-                              YahooFinanceCrumbProvider crumbProvider) {
-        this.http          = externalRestTemplate;
-        this.mapper        = new ObjectMapper();
-        this.crumbProvider = crumbProvider;
-    }
+    @NonNull RestTemplate              http;
+    @NonNull ObjectMapper              mapper;
+    @NonNull YahooFinanceCrumbProvider crumbProvider;
 
     // ── Symbol helpers ────────────────────────────────────────────────────
 
@@ -91,30 +87,34 @@ public class YahooFinanceClient {
         String url = BASE_CHART + ySymbol + "?interval=1d&range=1d";
         try {
             String raw = http.getForObject(url, String.class);
-            JsonNode root   = mapper.readTree(raw);
-            JsonNode result = root.path("chart").path("result").get(0);
-            JsonNode meta   = result.path("meta");
+            YfChartResponse resp   = mapper.readValue(raw, YfChartResponse.class);
+            YfChartResponse.ChartResult result = firstResult(resp);
+            if (result == null) return null;
 
-            QuoteData q = new QuoteData();
-            q.setSymbol(key);
-            q.setCompanyName(meta.path("longName").asText(symbol));
-            q.setExchange("NSE");
-            q.setCurrency(meta.path("currency").asText("INR"));
-            q.setCurrentPrice(meta.path("regularMarketPrice").asDouble());
-            q.setPreviousClose(meta.path("previousClose").asDouble());
-            q.setDayOpen(meta.path("regularMarketOpen").asDouble());
-            q.setDayHigh(meta.path("regularMarketDayHigh").asDouble());
-            q.setDayLow(meta.path("regularMarketDayLow").asDouble());
-            q.setVolume(meta.path("regularMarketVolume").asLong());
-            q.setAverageVolume(meta.path("regularMarketVolume").asLong());
-            q.setWeek52High(meta.path("fiftyTwoWeekHigh").asDouble());
-            q.setWeek52Low(meta.path("fiftyTwoWeekLow").asDouble());
-            q.setMarketCap(meta.path("marketCap").asDouble() / 1e7);
-            double cp = q.getCurrentPrice();
-            double pc = q.getPreviousClose();
-            q.setChange(cp - pc);
-            q.setChangePercent(pc != 0 ? (cp - pc) / pc * 100 : 0);
-            q.setRealData(true);
+            YfChartResponse.Meta meta = result.getMeta();
+            double cp = orZero(meta.getRegularMarketPrice());
+            double pc = orZero(meta.getPreviousClose());
+
+            QuoteData q = QuoteData.builder()
+                    .symbol(key)
+                    .companyName(meta.getLongName() != null ? meta.getLongName() : symbol)
+                    .exchange("NSE")
+                    .currency(meta.getCurrency() != null ? meta.getCurrency() : "INR")
+                    .currentPrice(cp)
+                    .previousClose(pc)
+                    .dayOpen(orZero(meta.getRegularMarketOpen()))
+                    .dayHigh(orZero(meta.getRegularMarketDayHigh()))
+                    .dayLow(orZero(meta.getRegularMarketDayLow()))
+                    .volume(orZero(meta.getRegularMarketVolume()))
+                    .averageVolume(orZero(meta.getRegularMarketVolume()))
+                    .week52High(orZero(meta.getFiftyTwoWeekHigh()))
+                    .week52Low(orZero(meta.getFiftyTwoWeekLow()))
+                    .marketCap(orZero(meta.getMarketCap()) / 1e7)
+                    .change(cp - pc)
+                    .changePercent(pc != 0 ? (cp - pc) / pc * 100 : 0)
+                    .realData(true)
+                    .build();
+
             quoteCache.put(key, q);
             log.info("YF quote fetched: {} @ {}", ySymbol, cp);
             return q;
@@ -137,31 +137,31 @@ public class YahooFinanceClient {
         List<HistoricalPrice> prices = new ArrayList<>();
         try {
             String raw = http.getForObject(url, String.class);
-            JsonNode root    = mapper.readTree(raw);
-            JsonNode result  = root.path("chart").path("result").get(0);
-            JsonNode timestamps  = result.path("timestamp");
-            JsonNode ohlcv       = result.path("indicators").path("quote").get(0);
-            JsonNode adjCloseArr = result.path("indicators").path("adjclose").get(0).path("adjclose");
+            YfChartResponse resp   = mapper.readValue(raw, YfChartResponse.class);
+            YfChartResponse.ChartResult result = firstResult(resp);
+            if (result == null || result.getTimestamp() == null) return prices;
 
-            JsonNode opens   = ohlcv.path("open");
-            JsonNode highs   = ohlcv.path("high");
-            JsonNode lows    = ohlcv.path("low");
-            JsonNode closes  = ohlcv.path("close");
-            JsonNode volumes = ohlcv.path("volume");
+            YfChartResponse.QuoteIndicator ohlcv = firstQuote(result);
+            List<Double> adjCloseArr = adjClose(result);
+            List<Long>   timestamps  = result.getTimestamp();
 
             for (int i = 0; i < timestamps.size(); i++) {
-                if (closes.get(i).isNull()) continue;
-                long epoch = timestamps.get(i).asLong();
-                LocalDate date = Instant.ofEpochSecond(epoch)
+                Double close = safeGet(ohlcv.getClose(), i);
+                if (close == null) continue;
+
+                LocalDate date = Instant.ofEpochSecond(timestamps.get(i))
                         .atZone(ZoneOffset.ofHoursMinutes(5, 30)).toLocalDate();
-                HistoricalPrice hp = new HistoricalPrice(
-                        date,
-                        opens.get(i).asDouble(), highs.get(i).asDouble(),
-                        lows.get(i).asDouble(), closes.get(i).asDouble(),
-                        adjCloseArr.size() > i ? adjCloseArr.get(i).asDouble()
-                                               : closes.get(i).asDouble(),
-                        volumes.get(i).asLong());
-                prices.add(hp);
+
+                prices.add(HistoricalPrice.builder()
+                        .date(date)
+                        .open(safeDouble(ohlcv.getOpen(), i))
+                        .high(safeDouble(ohlcv.getHigh(), i))
+                        .low(safeDouble(ohlcv.getLow(), i))
+                        .close(close)
+                        .adjClose(adjCloseArr.size() > i && adjCloseArr.get(i) != null
+                                ? adjCloseArr.get(i) : close)
+                        .volume(safeLong(ohlcv.getVolume(), i))
+                        .build());
             }
             histCache.put(cacheKey, prices);
             log.info("YF historical: {} bars for {}", prices.size(), ySymbol);
@@ -174,52 +174,55 @@ public class YahooFinanceClient {
     // ── Fundamentals ──────────────────────────────────────────────────────
 
     public FundamentalData getFundamentals(String symbol) {
-        JsonNode modules = fetchSummaryModules(symbol);
+        YfQuoteSummaryResponse.QuoteSummaryResult modules = fetchSummaryModules(symbol);
         if (modules == null) return null;
 
-        FundamentalData f = new FundamentalData();
-        f.setSymbol(symbol.toUpperCase());
-
-        JsonNode sd = modules.path("summaryDetail");
-        JsonNode fd = modules.path("financialData");
-        JsonNode ks = modules.path("defaultKeyStatistics");
-        JsonNode mh = modules.path("majorHoldersBreakdown");
-
-        f.setPeRatioTTM(doubleVal(sd, "trailingPE"));
-        f.setPeRatioForward(doubleVal(sd, "forwardPE"));
-        f.setPbRatio(doubleVal(ks, "priceToBook"));
-        f.setPsRatio(doubleVal(ks, "priceToSalesTrailing12Months"));
-        f.setEvToEbitda(doubleVal(ks, "enterpriseToEbitda"));
-        f.setPegRatio(doubleVal(ks, "pegRatio"));
-        f.setEpsTTM(doubleVal(ks, "trailingEps"));
-        f.setEpsForward(doubleVal(ks, "forwardEps"));
-        f.setBookValuePerShare(doubleVal(ks, "bookValue"));
-        f.setDividendYield(doubleVal(sd, "dividendYield") * 100);
-        f.setDividendRate(doubleVal(sd, "dividendRate"));
-        f.setGrossMargins(doubleVal(fd, "grossMargins") * 100);
-        f.setOperatingMargins(doubleVal(fd, "operatingMargins") * 100);
-        f.setProfitMargins(doubleVal(fd, "profitMargins") * 100);
-        f.setReturnOnEquity(doubleVal(fd, "returnOnEquity") * 100);
-        f.setReturnOnAssets(doubleVal(fd, "returnOnAssets") * 100);
-        f.setRevenueGrowth(doubleVal(fd, "revenueGrowth") * 100);
-        f.setEarningsGrowth(doubleVal(fd, "earningsGrowth") * 100);
-        f.setEarningsQuarterlyGrowth(doubleVal(ks, "earningsQuarterlyGrowth") * 100);
+        YfQuoteSummaryResponse.SummaryDetail        sd = modules.getSummaryDetail();
+        YfQuoteSummaryResponse.FinancialData         fd = modules.getFinancialData();
+        YfQuoteSummaryResponse.DefaultKeyStatistics  ks = modules.getDefaultKeyStatistics();
+        YfQuoteSummaryResponse.MajorHoldersBreakdown mh = modules.getMajorHoldersBreakdown();
+        YfQuoteSummaryResponse.Price                 pr = modules.getPrice();
 
         double inrCr = 1e7;
-        f.setTotalRevenueCr(doubleVal(fd, "totalRevenue") / inrCr);
-        f.setGrossProfitCr(doubleVal(fd, "grossProfits") / inrCr);
-        f.setEbitdaCr(doubleVal(fd, "ebitda") / inrCr);
-        f.setTotalDebtCr(doubleVal(fd, "totalDebt") / inrCr);
-        f.setTotalCashCr(doubleVal(fd, "totalCash") / inrCr);
-        f.setCurrentRatio(doubleVal(fd, "currentRatio"));
-        f.setDebtToEquity(doubleVal(fd, "debtToEquity") / 100);
-        f.setOperatingCashflowCr(doubleVal(fd, "operatingCashflow") / inrCr);
-        f.setFreeCashflowCr(doubleVal(fd, "freeCashflow") / inrCr);
-        f.setSharesOutstanding(longVal(ks, "sharesOutstanding"));
-        f.setHeldByInsidersPercent(doubleVal(mh, "insidersPercentHeld") * 100);
-        f.setHeldByInstitutionsPercent(doubleVal(mh, "institutionsPercentHeld") * 100);
-        f.setMarketCapCr(doubleVal(modules.path("price"), "marketCap") / inrCr);
-        f.setRealData(true);
+
+        FundamentalData f = FundamentalData.builder()
+                .symbol(symbol.toUpperCase())
+                .peRatioTTM(sd != null ? n(sd.getTrailingPE()) : 0)
+                .peRatioForward(sd != null ? n(sd.getForwardPE()) : 0)
+                .dividendYield(sd != null ? n(sd.getDividendYield()) * 100 : 0)
+                .dividendRate(sd != null ? n(sd.getDividendRate()) : 0)
+                .pbRatio(ks != null ? n(ks.getPriceToBook()) : 0)
+                .psRatio(ks != null ? n(ks.getPriceToSalesTrailing12Months()) : 0)
+                .evToEbitda(ks != null ? n(ks.getEnterpriseToEbitda()) : 0)
+                .pegRatio(ks != null ? n(ks.getPegRatio()) : 0)
+                .epsTTM(ks != null ? n(ks.getTrailingEps()) : 0)
+                .epsForward(ks != null ? n(ks.getForwardEps()) : 0)
+                .bookValuePerShare(ks != null ? n(ks.getBookValue()) : 0)
+                .earningsQuarterlyGrowth(ks != null ? n(ks.getEarningsQuarterlyGrowth()) * 100 : 0)
+                .sharesOutstanding(ks != null && ks.getSharesOutstanding() != null
+                        ? ks.getSharesOutstanding().asLong() : 0L)
+                .grossMargins(fd != null ? n(fd.getGrossMargins()) * 100 : 0)
+                .operatingMargins(fd != null ? n(fd.getOperatingMargins()) * 100 : 0)
+                .profitMargins(fd != null ? n(fd.getProfitMargins()) * 100 : 0)
+                .returnOnEquity(fd != null ? n(fd.getReturnOnEquity()) * 100 : 0)
+                .returnOnAssets(fd != null ? n(fd.getReturnOnAssets()) * 100 : 0)
+                .revenueGrowth(fd != null ? n(fd.getRevenueGrowth()) * 100 : 0)
+                .earningsGrowth(fd != null ? n(fd.getEarningsGrowth()) * 100 : 0)
+                .totalRevenueCr(fd != null ? n(fd.getTotalRevenue()) / inrCr : 0)
+                .grossProfitCr(fd != null ? n(fd.getGrossProfits()) / inrCr : 0)
+                .ebitdaCr(fd != null ? n(fd.getEbitda()) / inrCr : 0)
+                .totalDebtCr(fd != null ? n(fd.getTotalDebt()) / inrCr : 0)
+                .totalCashCr(fd != null ? n(fd.getTotalCash()) / inrCr : 0)
+                .currentRatio(fd != null ? n(fd.getCurrentRatio()) : 0)
+                .debtToEquity(fd != null ? n(fd.getDebtToEquity()) / 100 : 0)
+                .operatingCashflowCr(fd != null ? n(fd.getOperatingCashflow()) / inrCr : 0)
+                .freeCashflowCr(fd != null ? n(fd.getFreeCashflow()) / inrCr : 0)
+                .heldByInsidersPercent(mh != null ? n(mh.getInsidersPercentHeld()) * 100 : 0)
+                .heldByInstitutionsPercent(mh != null ? n(mh.getInstitutionsPercentHeld()) * 100 : 0)
+                .marketCapCr(pr != null ? n(pr.getMarketCap()) / inrCr : 0)
+                .realData(true)
+                .build();
+
         log.info("YF fundamentals fetched for {}", symbol);
         return f;
     }
@@ -231,54 +234,57 @@ public class YahooFinanceClient {
         AnalystConsensus hit = analystCache.get(key);
         if (hit != null) return hit;
 
-        JsonNode modules = fetchSummaryModules(symbol);
+        YfQuoteSummaryResponse.QuoteSummaryResult modules = fetchSummaryModules(symbol);
         if (modules == null) return null;
 
-        AnalystConsensus ac = new AnalystConsensus();
-        ac.setSymbol(symbol.toUpperCase());
+        YfQuoteSummaryResponse.RecommendationTrend rt = modules.getRecommendationTrend();
+        YfQuoteSummaryResponse.FinancialData        fd = modules.getFinancialData();
+        YfQuoteSummaryResponse.Price               pr = modules.getPrice();
 
-        JsonNode rt = modules.path("recommendationTrend").path("trend");
-        if (rt.isArray() && rt.size() > 0) {
-            JsonNode latest = rt.get(0);
-            int sb = latest.path("strongBuy").asInt();
-            int buy = latest.path("buy").asInt();
-            int hold = latest.path("hold").asInt();
-            int sell = latest.path("sell").asInt();
-            int ss = latest.path("strongSell").asInt();
+        AnalystConsensus.AnalystConsensusBuilder builder = AnalystConsensus.builder()
+                .symbol(symbol.toUpperCase());
+
+        List<YfQuoteSummaryResponse.RecommendationPeriod> trend =
+                (rt != null && rt.getTrend() != null) ? rt.getTrend() : List.of();
+        if (!trend.isEmpty()) {
+            YfQuoteSummaryResponse.RecommendationPeriod latest = trend.get(0);
+            int sb = latest.getStrongBuy(), buy = latest.getBuy(),
+                hold = latest.getHold(), sell = latest.getSell(), ss = latest.getStrongSell();
             int total = sb + buy + hold + sell + ss;
-            ac.setStrongBuyCount(sb); ac.setBuyCount(buy); ac.setHoldCount(hold);
-            ac.setSellCount(sell); ac.setStrongSellCount(ss); ac.setTotalAnalysts(total);
             double score = total > 0
-                    ? (1.0*sb + 2.0*buy + 3.0*hold + 4.0*sell + 5.0*ss) / total : 3.0;
-            ac.setConsensusScore(score);
-            ac.setConsensusLabel(scoreToLabel(score));
+                    ? (1.0 * sb + 2.0 * buy + 3.0 * hold + 4.0 * sell + 5.0 * ss) / total : 3.0;
+            builder.strongBuyCount(sb).buyCount(buy).holdCount(hold)
+                   .sellCount(sell).strongSellCount(ss).totalAnalysts(total)
+                   .consensusScore(score).consensusLabel(scoreToLabel(score));
         }
 
-        JsonNode fd = modules.path("financialData");
-        ac.setTargetLow(doubleVal(fd, "targetLowPrice"));
-        ac.setTargetMean(doubleVal(fd, "targetMeanPrice"));
-        ac.setTargetHigh(doubleVal(fd, "targetHighPrice"));
-        ac.setTargetMedian(doubleVal(fd, "targetMedianPrice"));
-        double cp = doubleVal(modules.path("price"), "regularMarketPrice");
-        ac.setCurrentPrice(cp);
-        double tgt = ac.getTargetMean();
-        ac.setUpsidePotentialPercent(cp > 0 && tgt > 0 ? (tgt - cp) / cp * 100 : 0);
+        double cp  = pr != null ? n(pr.getRegularMarketPrice()) : 0;
+        double tgt = fd != null ? n(fd.getTargetMeanPrice()) : 0;
+        builder.targetLow(fd != null ? n(fd.getTargetLowPrice()) : 0)
+               .targetMean(tgt)
+               .targetHigh(fd != null ? n(fd.getTargetHighPrice()) : 0)
+               .targetMedian(fd != null ? n(fd.getTargetMedianPrice()) : 0)
+               .currentPrice(cp)
+               .upsidePotentialPercent(cp > 0 && tgt > 0 ? (tgt - cp) / cp * 100 : 0);
 
-        JsonNode udh = modules.path("upgradeDowngradeHistory").path("history");
         List<AnalystConsensus.UpgradeEvent> events = new ArrayList<>();
-        int limit = Math.min(10, udh.size());
-        for (int i = 0; i < limit; i++) {
-            JsonNode ev = udh.get(i);
-            AnalystConsensus.UpgradeEvent ue = new AnalystConsensus.UpgradeEvent();
-            ue.setFirm(ev.path("firm").asText());
-            ue.setAction(ev.path("action").asText());
-            ue.setFromGrade(ev.path("fromGrade").asText());
-            ue.setToGrade(ev.path("toGrade").asText());
-            ue.setEpochTime(Instant.ofEpochSecond(ev.path("epochGradeDate").asLong()));
-            events.add(ue);
+        YfQuoteSummaryResponse.UpgradeDowngradeHistory udh = modules.getUpgradeDowngradeHistory();
+        if (udh != null && udh.getHistory() != null) {
+            int limit = Math.min(10, udh.getHistory().size());
+            for (int i = 0; i < limit; i++) {
+                YfQuoteSummaryResponse.UpgradeDowngradeEvent ev = udh.getHistory().get(i);
+                events.add(AnalystConsensus.UpgradeEvent.builder()
+                        .firm(ev.getFirm())
+                        .action(ev.getAction())
+                        .fromGrade(ev.getFromGrade())
+                        .toGrade(ev.getToGrade())
+                        .epochTime(ev.getEpochGradeDate() != null
+                                ? Instant.ofEpochSecond(ev.getEpochGradeDate()) : Instant.EPOCH)
+                        .build());
+            }
         }
-        ac.setRecentUpgrades(events);
-        ac.setRealData(true);
+
+        AnalystConsensus ac = builder.recentUpgrades(events).realData(true).build();
         analystCache.put(key, ac);
         log.info("YF analyst consensus fetched for {}", symbol);
         return ac;
@@ -291,120 +297,103 @@ public class YahooFinanceClient {
         EarningsData hit = earningsCache.get(key);
         if (hit != null) return hit;
 
-        JsonNode modules = fetchSummaryModules(symbol);
+        YfQuoteSummaryResponse.QuoteSummaryResult modules = fetchSummaryModules(symbol);
         if (modules == null) return null;
 
-        EarningsData ed = new EarningsData();
-        ed.setSymbol(symbol.toUpperCase());
+        YfQuoteSummaryResponse.EarningsHistory earningsHistoryModule = modules.getEarningsHistory();
+        YfQuoteSummaryResponse.EarningsTrend   earningsTrendModule   = modules.getEarningsTrend();
 
-        JsonNode hist = modules.path("earningsHistory").path("history");
         List<EarningsData.QuarterlyEarning> qHist = new ArrayList<>();
-        double totalSurprise = 0; int beats = 0;
-        for (int i = 0; i < hist.size(); i++) {
-            JsonNode q = hist.get(i);
-            EarningsData.QuarterlyEarning qe = new EarningsData.QuarterlyEarning();
-            qe.setQuarter(q.path("quarter").asText());
-            double est  = doubleVal(q, "epsEstimate");
-            double act  = doubleVal(q, "epsActual");
-            double surp = doubleVal(q, "epsDifference");
-            double sPct = doubleVal(q, "surprisePercent");
-            qe.setEpsEstimate(est); qe.setEpsActual(act);
-            qe.setEpsSurprise(surp); qe.setEpsSurprisePercent(sPct);
-            qe.setBeat(act > est);
-            if (act > est) beats++;
-            totalSurprise += sPct;
-            qHist.add(qe);
+        double totalSurprise = 0;
+        int beats = 0;
+
+        if (earningsHistoryModule != null && earningsHistoryModule.getHistory() != null) {
+            for (YfQuoteSummaryResponse.EarningsHistoryEntry q : earningsHistoryModule.getHistory()) {
+                double est  = n(q.getEpsEstimate());
+                double act  = n(q.getEpsActual());
+                double surp = n(q.getEpsDifference());
+                double sPct = n(q.getSurprisePercent());
+                boolean beat = act > est;
+                if (beat) beats++;
+                totalSurprise += sPct;
+                qHist.add(EarningsData.QuarterlyEarning.builder()
+                        .quarter(q.getQuarter())
+                        .epsEstimate(est).epsActual(act)
+                        .epsSurprise(surp).epsSurprisePercent(sPct)
+                        .beat(beat)
+                        .build());
+            }
         }
-        ed.setQuarterlyHistory(qHist);
+
         int n = qHist.size();
-        ed.setBeatRatePercent(n > 0 ? (double) beats / n * 100 : 50);
-        ed.setAverageSurprise(n > 0 ? totalSurprise / n : 0);
 
-        JsonNode trendNode = modules.path("earningsTrend").path("trend");
         List<EarningsData.EarningsTrend> trends = new ArrayList<>();
-        for (int i = 0; i < trendNode.size(); i++) {
-            JsonNode t = trendNode.get(i);
-            EarningsData.EarningsTrend et = new EarningsData.EarningsTrend();
-            et.setPeriod(t.path("period").asText());
-            et.setEndDate(t.path("endDate").asText());
-            JsonNode epsEst = t.path("earningsEstimate");
-            et.setEpsEstimateLow(doubleVal(epsEst, "low"));
-            et.setEpsEstimateHigh(doubleVal(epsEst, "high"));
-            et.setEpsEstimateMean(doubleVal(epsEst, "avg"));
-            et.setEpsEstimateAvg(doubleVal(epsEst, "avg"));
-            double yearAgo = doubleVal(epsEst, "yearAgoEps");
-            et.setEpsGrowthRate(yearAgo != 0
-                    ? (et.getEpsEstimateMean() - yearAgo) / Math.abs(yearAgo) * 100 : 0);
-            JsonNode revEst = t.path("revenueEstimate");
-            et.setRevenueEstimateLow(doubleVal(revEst, "low"));
-            et.setRevenueEstimateHigh(doubleVal(revEst, "high"));
-            et.setRevenueEstimateAvg(doubleVal(revEst, "avg"));
-            trends.add(et);
+        if (earningsTrendModule != null && earningsTrendModule.getTrend() != null) {
+            for (YfQuoteSummaryResponse.EarningsTrendPeriod t : earningsTrendModule.getTrend()) {
+                YfQuoteSummaryResponse.EarningsEstimate epsEst = t.getEarningsEstimate();
+                YfQuoteSummaryResponse.RevenueEstimate  revEst = t.getRevenueEstimate();
+                double mean    = epsEst != null ? n(epsEst.getAvg()) : 0;
+                double yearAgo = epsEst != null ? n(epsEst.getYearAgoEps()) : 0;
+                double growth  = yearAgo != 0 ? (mean - yearAgo) / Math.abs(yearAgo) * 100 : 0;
+                trends.add(EarningsData.EarningsTrend.builder()
+                        .period(t.getPeriod())
+                        .endDate(t.getEndDate())
+                        .epsEstimateLow(epsEst != null ? n(epsEst.getLow()) : 0)
+                        .epsEstimateHigh(epsEst != null ? n(epsEst.getHigh()) : 0)
+                        .epsEstimateMean(mean)
+                        .epsEstimateAvg(mean)
+                        .revenueEstimateLow(revEst != null ? n(revEst.getLow()) : 0)
+                        .revenueEstimateHigh(revEst != null ? n(revEst.getHigh()) : 0)
+                        .revenueEstimateAvg(revEst != null ? n(revEst.getAvg()) : 0)
+                        .epsGrowthRate(growth)
+                        .build());
+            }
         }
-        ed.setForwardTrends(trends);
 
+        String momentum = "STABLE";
         if (n >= 2) {
-            double recent = qHist.get(n-1).getEpsSurprisePercent();
-            double prior  = qHist.get(n-2).getEpsSurprisePercent();
-            ed.setEarningsMomentum(recent > prior ? "ACCELERATING"
-                    : recent < prior - 5 ? "DECELERATING" : "STABLE");
-        } else {
-            ed.setEarningsMomentum("STABLE");
+            double recent = qHist.get(n - 1).getEpsSurprisePercent();
+            double prior  = qHist.get(n - 2).getEpsSurprisePercent();
+            momentum = recent > prior ? "ACCELERATING" : recent < prior - 5 ? "DECELERATING" : "STABLE";
         }
 
-        ed.setRealData(true);
+        EarningsData ed = EarningsData.builder()
+                .symbol(symbol.toUpperCase())
+                .quarterlyHistory(qHist)
+                .forwardTrends(trends)
+                .beatRatePercent(n > 0 ? (double) beats / n * 100 : 50)
+                .averageSurprise(n > 0 ? totalSurprise / n : 0)
+                .earningsMomentum(momentum)
+                .realData(true)
+                .build();
+
         earningsCache.put(key, ed);
         log.info("YF earnings fetched for {}", symbol);
         return ed;
     }
 
-    // ── Private helpers ───────────────────────────────────────────────────
+    // ── Private: fetch quoteSummary ───────────────────────────────────────
 
-    /** Fetch all summary modules in one HTTP call; result cached for 6 hours. */
     /**
      * Fetch all quoteSummary modules in one call using crumb authentication.
-     *
-     * Yahoo Finance requires:
-     *   • Session cookies obtained from fc.yahoo.com (managed by YahooFinanceCrumbProvider)
-     *   • A crumb token appended as ?crumb=… to the URL
-     *   • The request must use query2.finance.yahoo.com (not query1)
-     *
-     * We use java.net.http.HttpClient (from the crumb provider) so that the same
-     * cookie jar is reused automatically across requests.
+     * Result is cached for 6 hours.
      */
-    private JsonNode fetchSummaryModules(String symbol) {
+    private YfQuoteSummaryResponse.QuoteSummaryResult fetchSummaryModules(String symbol) {
         String key = symbol.toUpperCase() + "_summary";
-        JsonNode hit = summaryCache.get(key);
+        YfQuoteSummaryResponse.QuoteSummaryResult hit = summaryCache.get(key);
         if (hit != null) return hit;
 
         String ySymbol = toYahooSymbol(symbol);
         String baseUrl = BASE_SUMMARY + ySymbol + "?modules=" + MODULES_FULL;
-        String url     = crumbProvider.buildSummaryUrl(baseUrl); // appends &crumb=...
+        String url     = crumbProvider.buildSummaryUrl(baseUrl);
 
         try {
-            HttpRequest req = HttpRequest.newBuilder(URI.create(url))
-                    .GET()
-                    .header("User-Agent", UA)
-                    .header("Accept", "application/json, */*")
-                    .header("Referer", "https://finance.yahoo.com/quote/" + ySymbol + "/")
-                    .header("Accept-Language", "en-US,en;q=0.9")
-                    .build();
-
-            HttpResponse<String> resp = crumbProvider.getHttpClient()
-                    .send(req, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> resp = sendGet(url, ySymbol);
 
             if (resp.statusCode() == 401) {
-                // Crumb expired – invalidate and retry once
-                log.warn("YF quoteSummary 401 for {} – crumb may be stale, retrying", ySymbol);
-                url  = crumbProvider.buildSummaryUrl(baseUrl); // forces crumb refresh
-                req  = HttpRequest.newBuilder(URI.create(url))
-                        .GET()
-                        .header("User-Agent", UA)
-                        .header("Accept", "application/json, */*")
-                        .header("Referer", "https://finance.yahoo.com/quote/" + ySymbol + "/")
-                        .build();
-                resp = crumbProvider.getHttpClient()
-                        .send(req, HttpResponse.BodyHandlers.ofString());
+                log.warn("YF quoteSummary 401 for {} – retrying with fresh crumb", ySymbol);
+                url  = crumbProvider.buildSummaryUrl(baseUrl);
+                resp = sendGet(url, ySymbol);
             }
 
             if (resp.statusCode() != 200) {
@@ -412,31 +401,76 @@ public class YahooFinanceClient {
                 return null;
             }
 
-            JsonNode root   = mapper.readTree(resp.body());
-            JsonNode result = root.path("quoteSummary").path("result").get(0);
-            if (result != null && !result.isMissingNode()) {
-                summaryCache.put(key, result);
-                log.info("YF quoteSummary OK for {}", ySymbol);
+            YfQuoteSummaryResponse parsed = mapper.readValue(resp.body(), YfQuoteSummaryResponse.class);
+            if (parsed.getQuoteSummary() == null
+                    || parsed.getQuoteSummary().getResult() == null
+                    || parsed.getQuoteSummary().getResult().isEmpty()) {
+                return null;
             }
+
+            YfQuoteSummaryResponse.QuoteSummaryResult result =
+                    parsed.getQuoteSummary().getResult().get(0);
+            summaryCache.put(key, result);
+            log.info("YF quoteSummary OK for {}", ySymbol);
             return result;
+
         } catch (Exception e) {
             log.warn("YF summary failed for {}: {}", ySymbol, e.getMessage());
             return null;
         }
     }
 
-    private double doubleVal(JsonNode node, String field) {
-        JsonNode v = node.path(field);
-        if (v.isMissingNode() || v.isNull()) return 0.0;
-        if (v.isObject()) return v.path("raw").asDouble(0.0);
-        return v.asDouble(0.0);
+    private HttpResponse<String> sendGet(String url, String ySymbol) throws Exception {
+        HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                .GET()
+                .header("User-Agent", UA)
+                .header("Accept", "application/json, */*")
+                .header("Referer", "https://finance.yahoo.com/quote/" + ySymbol + "/")
+                .header("Accept-Language", "en-US,en;q=0.9")
+                .build();
+        return crumbProvider.getHttpClient().send(req, HttpResponse.BodyHandlers.ofString());
     }
 
-    private long longVal(JsonNode node, String field) {
-        JsonNode v = node.path(field);
-        if (v.isMissingNode() || v.isNull()) return 0L;
-        if (v.isObject()) return v.path("raw").asLong(0L);
-        return v.asLong(0L);
+    // ── Null-safe helpers ─────────────────────────────────────────────────
+
+    private YfChartResponse.ChartResult firstResult(YfChartResponse resp) {
+        if (resp == null || resp.getChart() == null
+                || resp.getChart().getResult() == null
+                || resp.getChart().getResult().isEmpty()) return null;
+        return resp.getChart().getResult().get(0);
+    }
+
+    private YfChartResponse.QuoteIndicator firstQuote(YfChartResponse.ChartResult r) {
+        if (r.getIndicators() == null || r.getIndicators().getQuote() == null
+                || r.getIndicators().getQuote().isEmpty()) {
+            return YfChartResponse.QuoteIndicator.builder().build();
+        }
+        return r.getIndicators().getQuote().get(0);
+    }
+
+    private List<Double> adjClose(YfChartResponse.ChartResult r) {
+        if (r.getIndicators() == null || r.getIndicators().getAdjclose() == null
+                || r.getIndicators().getAdjclose().isEmpty()) return List.of();
+        YfChartResponse.AdjCloseIndicator ac = r.getIndicators().getAdjclose().get(0);
+        return ac.getAdjclose() != null ? ac.getAdjclose() : List.of();
+    }
+
+    /** Unwrap a nullable YfNumber to a primitive double. */
+    private double n(YfNumber v) { return v != null ? v.asDouble() : 0.0; }
+
+    private double orZero(Double v) { return v != null ? v : 0.0; }
+    private long   orZero(Long v)   { return v != null ? v : 0L; }
+
+    private <T> T safeGet(List<T> list, int i) {
+        return (list != null && i < list.size()) ? list.get(i) : null;
+    }
+
+    private double safeDouble(List<Double> list, int i) {
+        Double v = safeGet(list, i); return v != null ? v : 0.0;
+    }
+
+    private long safeLong(List<Long> list, int i) {
+        Long v = safeGet(list, i); return v != null ? v : 0L;
     }
 
     private String rangeToInterval(String range) {

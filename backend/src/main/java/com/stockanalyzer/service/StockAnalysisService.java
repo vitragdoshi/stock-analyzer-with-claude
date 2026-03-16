@@ -6,9 +6,11 @@ import com.stockanalyzer.dto.StockAnalysisResponse.*;
 import com.stockanalyzer.inference.InferenceEngine;
 import com.stockanalyzer.inference.ScoreCard;
 import com.stockanalyzer.model.QuoteData;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.AccessLevel;
+import lombok.NonNull;
+import lombok.RequiredArgsConstructor;
+import lombok.experimental.FieldDefaults;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.Random;
@@ -26,40 +28,20 @@ import java.util.Random;
  *   - Overall summary     → InferenceEngine (multi-factor weighted scoring on real data)
  */
 @Service
+@RequiredArgsConstructor
+@Slf4j
+@FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
 public class StockAnalysisService {
 
-    private static final Logger log = LoggerFactory.getLogger(StockAnalysisService.class);
-
-    private final MockDataService            mockDataService;
-    private final TechnicalAnalysisService   technicalService;
-    private final FundamentalAnalysisService fundamentalService;
-    private final NewsService                newsService;
-    private final FinancialStatementsService financialService;
-    private final ShareholdingService        shareholdingService;
-    private final ManipulationDetectionService manipulationService;
-    private final YahooFinanceClient         yahooClient;
-    private final InferenceEngine            inferenceEngine;
-
-    @Autowired
-    public StockAnalysisService(MockDataService mockDataService,
-                                TechnicalAnalysisService technicalService,
-                                FundamentalAnalysisService fundamentalService,
-                                NewsService newsService,
-                                FinancialStatementsService financialService,
-                                ShareholdingService shareholdingService,
-                                ManipulationDetectionService manipulationService,
-                                YahooFinanceClient yahooClient,
-                                InferenceEngine inferenceEngine) {
-        this.mockDataService     = mockDataService;
-        this.technicalService    = technicalService;
-        this.fundamentalService  = fundamentalService;
-        this.newsService         = newsService;
-        this.financialService    = financialService;
-        this.shareholdingService = shareholdingService;
-        this.manipulationService = manipulationService;
-        this.yahooClient         = yahooClient;
-        this.inferenceEngine     = inferenceEngine;
-    }
+    @NonNull MockDataService            mockDataService;
+    @NonNull TechnicalAnalysisService   technicalService;
+    @NonNull FundamentalAnalysisService fundamentalService;
+    @NonNull NewsService                newsService;
+    @NonNull FinancialStatementsService financialService;
+    @NonNull ShareholdingService        shareholdingService;
+    @NonNull ManipulationDetectionService manipulationService;
+    @NonNull YahooFinanceClient         yahooClient;
+    @NonNull InferenceEngine            inferenceEngine;
 
     public StockAnalysisResponse analyze(String symbol) {
         String upperSymbol = symbol.toUpperCase().trim();
@@ -95,64 +77,60 @@ public class StockAnalysisService {
                 && !liveQuote.getCompanyName().isEmpty())
                 ? liveQuote.getCompanyName() : meta[0];
 
-        // ── Build response ────────────────────────────────────────────────
-        StockAnalysisResponse response = new StockAnalysisResponse();
-        response.setSymbol(upperSymbol);
-        response.setCompanyName(companyName);
-        response.setExchange(meta[1]);
-        response.setSector(meta[2]);
-
-        // Stock Overview
-        StockOverview overview = new StockOverview();
-        overview.setCurrentPrice(round2(currentPrice));
-        overview.setDayHigh(round2(dayHigh));
-        overview.setDayLow(round2(dayLow));
-        overview.setWeekHigh52(round2(week52High));
-        overview.setWeekLow52(round2(week52Low));
-
+        // ── Build overview ──────────────────────────────────────────────────
         long volume    = (liveQuote != null) ? liveQuote.getVolume()
                 : (long)(1_000_000 + rng.nextDouble() * 50_000_000);
         long avgVolume = (liveQuote != null) ? liveQuote.getAverageVolume()
                 : (long)(2_000_000 + rng.nextDouble() * 20_000_000);
-        overview.setVolume(volume);
-        overview.setAvgVolume(avgVolume);
 
         double marketCap = (liveQuote != null && liveQuote.getMarketCap() > 0)
                 ? liveQuote.getMarketCap()
                 : currentPrice * (100_000_000L + (long)(rng.nextDouble() * 10_000_000_000L)) / 10_000_000.0;
-        overview.setMarketCap(round2(marketCap));
-        overview.setChangeAmount(round2(change));
-        overview.setChangePercent(round2(changePct));
-        overview.setPriceChangeJustification(String.format(
-                "Stock %s ₹%.2f (%.2f%%) today. %s",
-                change >= 0 ? "gained" : "fell", Math.abs(change), Math.abs(changePct),
-                change >= 0
-                    ? "Positive momentum. See inference engine scorecard for detailed drivers."
-                    : "Mild selling pressure. Inference engine scorecard available for detailed analysis."));
-        response.setOverview(overview);
+
+        var overview = StockOverview.builder()
+                .currentPrice(round2(currentPrice))
+                .dayHigh(round2(dayHigh))
+                .dayLow(round2(dayLow))
+                .weekHigh52(round2(week52High))
+                .weekLow52(round2(week52Low))
+                .volume(volume)
+                .avgVolume(avgVolume)
+                .marketCap(round2(marketCap))
+                .changeAmount(round2(change))
+                .changePercent(round2(changePct))
+                .priceChangeJustification(String.format(
+                        "Stock %s ₹%.2f (%.2f%%) today. %s",
+                        change >= 0 ? "gained" : "fell", Math.abs(change), Math.abs(changePct),
+                        change >= 0
+                            ? "Positive momentum. See inference engine scorecard for detailed drivers."
+                            : "Mild selling pressure. Inference engine scorecard available for detailed analysis."))
+                .build();
 
         // ── Sub-analyses (existing services with real-data enrichment) ────
-        response.setTechnicalAnalysis(technicalService.analyze(
-                upperSymbol, currentPrice, prices, new Random(rng.nextLong())));
-
-        response.setFundamentalAnalysis(fundamentalService.analyze(
-                upperSymbol, currentPrice, meta[2], new Random(rng.nextLong())));
-
-        response.setCompanyNews(newsService.generateCompanyNews(
-                upperSymbol, companyName, new Random(rng.nextLong())));
-        response.setCompetitorNews(newsService.generateCompetitorNews(
-                upperSymbol, mockDataService.getCompetitors(upperSymbol),
-                meta[2], new Random(rng.nextLong())));
-
         double baseRevenue = currentPrice * (10_000 + rng.nextInt(500_000));
-        response.setFinancialStatements(financialService.generate(
-                upperSymbol, baseRevenue, new Random(rng.nextLong())));
 
-        response.setShareholdingPattern(shareholdingService.analyze(
-                upperSymbol, new Random(rng.nextLong())));
-
-        response.setManipulationAnalysis(manipulationService.analyze(
-                upperSymbol, currentPrice, prices, volume, avgVolume, new Random(rng.nextLong())));
+        var response = StockAnalysisResponse.builder()
+                .symbol(upperSymbol)
+                .companyName(companyName)
+                .exchange(meta[1])
+                .sector(meta[2])
+                .overview(overview)
+                .technicalAnalysis(technicalService.analyze(
+                        upperSymbol, currentPrice, prices, new Random(rng.nextLong())))
+                .fundamentalAnalysis(fundamentalService.analyze(
+                        upperSymbol, currentPrice, meta[2], new Random(rng.nextLong())))
+                .companyNews(newsService.generateCompanyNews(
+                        upperSymbol, companyName, new Random(rng.nextLong())))
+                .competitorNews(newsService.generateCompetitorNews(
+                        upperSymbol, mockDataService.getCompetitors(upperSymbol),
+                        meta[2], new Random(rng.nextLong())))
+                .financialStatements(financialService.generate(
+                        upperSymbol, baseRevenue, new Random(rng.nextLong())))
+                .shareholdingPattern(shareholdingService.analyze(
+                        upperSymbol, new Random(rng.nextLong())))
+                .manipulationAnalysis(manipulationService.analyze(
+                        upperSymbol, currentPrice, prices, volume, avgVolume, new Random(rng.nextLong())))
+                .build();
 
         // ── Overall summary driven by InferenceEngine ─────────────────────
         buildOverallSummary(response, upperSymbol);

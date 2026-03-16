@@ -4,9 +4,11 @@ import com.stockanalyzer.client.NewsAggregatorClient;
 import com.stockanalyzer.client.YahooFinanceClient;
 import com.stockanalyzer.model.*;
 import com.stockanalyzer.service.MockDataService;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.AccessLevel;
+import lombok.NonNull;
+import lombok.RequiredArgsConstructor;
+import lombok.experimental.FieldDefaults;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -37,22 +39,23 @@ import java.util.Map;
  *   30–44   REDUCE
  *   0–29    SELL
  */
+@Slf4j
 @Service
+@RequiredArgsConstructor
+@FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
 public class InferenceEngine {
 
-    private static final Logger log = LoggerFactory.getLogger(InferenceEngine.class);
-
     // ── Weights ───────────────────────────────────────────────────────────
-    private static final double W_TECHNICAL   = 0.20;
-    private static final double W_FUNDAMENTAL = 0.25;
-    private static final double W_VALUATION   = 0.15;
-    private static final double W_ANALYST     = 0.15;
-    private static final double W_EARNINGS    = 0.10;
-    private static final double W_SENTIMENT   = 0.10;
-    private static final double W_MOMENTUM    = 0.05;
+    static final double W_TECHNICAL   = 0.20;
+    static final double W_FUNDAMENTAL = 0.25;
+    static final double W_VALUATION   = 0.15;
+    static final double W_ANALYST     = 0.15;
+    static final double W_EARNINGS    = 0.10;
+    static final double W_SENTIMENT   = 0.10;
+    static final double W_MOMENTUM    = 0.05;
 
     // Industry P/E benchmarks for valuation scoring
-    private static final Map<String, Double> INDUSTRY_PE = Map.of(
+    static final Map<String, Double> INDUSTRY_PE = Map.of(
             "IT",       28.5,
             "Banking",  18.0,
             "NBFC",     28.0,
@@ -63,24 +66,11 @@ public class InferenceEngine {
             "Telecom",  35.0
     );
 
-    private final YahooFinanceClient  yahooClient;
-    private final NewsAggregatorClient newsClient;
-    private final TechnicalCalculator  techCalc;
-    private final SentimentAnalyzer    sentimentAnalyzer;
-    private final MockDataService      mockDataService;
-
-    @Autowired
-    public InferenceEngine(YahooFinanceClient yahooClient,
-                           NewsAggregatorClient newsClient,
-                           TechnicalCalculator techCalc,
-                           SentimentAnalyzer sentimentAnalyzer,
-                           MockDataService mockDataService) {
-        this.yahooClient       = yahooClient;
-        this.newsClient        = newsClient;
-        this.techCalc          = techCalc;
-        this.sentimentAnalyzer = sentimentAnalyzer;
-        this.mockDataService   = mockDataService;
-    }
+    @NonNull YahooFinanceClient   yahooClient;
+    @NonNull NewsAggregatorClient newsClient;
+    @NonNull TechnicalCalculator  techCalc;
+    @NonNull SentimentAnalyzer    sentimentAnalyzer;
+    @NonNull MockDataService      mockDataService;
 
     // ── Main entry point ──────────────────────────────────────────────────
 

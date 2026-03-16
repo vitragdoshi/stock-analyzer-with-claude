@@ -1,11 +1,14 @@
 package com.stockanalyzer.service;
 
 import com.stockanalyzer.dto.StockAnalysisResponse.*;
+import lombok.AccessLevel;
+import lombok.experimental.FieldDefaults;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
 
 @Service
+@FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
 public class MockDataService {
 
     private static final Map<String, String[]> STOCK_META = new HashMap<>();

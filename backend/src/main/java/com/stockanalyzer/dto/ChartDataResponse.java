@@ -2,63 +2,42 @@ package com.stockanalyzer.dto;
 
 import java.util.List;
 
+import lombok.*;
+import lombok.experimental.FieldDefaults;
+import lombok.extern.jackson.Jacksonized;
+
+@Data
+@Builder
+@Jacksonized
+@NoArgsConstructor
+@AllArgsConstructor
+@FieldDefaults(level = AccessLevel.PRIVATE)
 public class ChartDataResponse {
-    private String symbol;
-    private String timeframe;
-    private List<CandleData> candles;
-    private List<VolumeData> volumes;
+    String symbol;
+    String timeframe;
+    List<CandleData> candles;
+    List<VolumeData> volumes;
 
-    public String getSymbol() { return symbol; }
-    public void setSymbol(String symbol) { this.symbol = symbol; }
-
-    public String getTimeframe() { return timeframe; }
-    public void setTimeframe(String timeframe) { this.timeframe = timeframe; }
-
-    public List<CandleData> getCandles() { return candles; }
-    public void setCandles(List<CandleData> candles) { this.candles = candles; }
-
-    public List<VolumeData> getVolumes() { return volumes; }
-    public void setVolumes(List<VolumeData> volumes) { this.volumes = volumes; }
-
+    @Getter
+    @Builder
+    @Jacksonized
+    @FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
     public static class CandleData {
-        private String date;
-        private double open;
-        private double high;
-        private double low;
-        private double close;
-        private long volume;
-
-        public String getDate() { return date; }
-        public void setDate(String date) { this.date = date; }
-
-        public double getOpen() { return open; }
-        public void setOpen(double open) { this.open = open; }
-
-        public double getHigh() { return high; }
-        public void setHigh(double high) { this.high = high; }
-
-        public double getLow() { return low; }
-        public void setLow(double low) { this.low = low; }
-
-        public double getClose() { return close; }
-        public void setClose(double close) { this.close = close; }
-
-        public long getVolume() { return volume; }
-        public void setVolume(long volume) { this.volume = volume; }
+        String date;
+        double open;
+        double high;
+        double low;
+        double close;
+        long volume;
     }
 
+    @Getter
+    @Builder
+    @Jacksonized
+    @FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
     public static class VolumeData {
-        private String date;
-        private long volume;
-        private boolean aboveAverage;
-
-        public String getDate() { return date; }
-        public void setDate(String date) { this.date = date; }
-
-        public long getVolume() { return volume; }
-        public void setVolume(long volume) { this.volume = volume; }
-
-        public boolean isAboveAverage() { return aboveAverage; }
-        public void setAboveAverage(boolean aboveAverage) { this.aboveAverage = aboveAverage; }
+        String date;
+        long volume;
+        boolean aboveAverage;
     }
 }

@@ -1,6 +1,8 @@
 package com.stockanalyzer.inference;
 
 import com.stockanalyzer.model.NewsArticle;
+import lombok.AccessLevel;
+import lombok.experimental.FieldDefaults;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -19,6 +21,7 @@ import java.util.Set;
  *  - Aggregate sentiment is normalised to -1.0 … +1.0.
  */
 @Component
+@FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
 public class SentimentAnalyzer {
 
     // Half-life for recency weighting (in hours)
